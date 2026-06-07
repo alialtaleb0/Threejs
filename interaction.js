@@ -3,12 +3,16 @@
 // =============================================
 
 import * as THREE from "three";
+import { physicsParams } from "./physics-params.js";
 
 export const draggedBalls = new Map();
 
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const intersectionPoint = new THREE.Vector3();
+
+// keep extra drag info per pointer to compute release velocities
+const dragInfo = new Map();
 
 export function initInteraction(camera, controls, newtonsCradle){
 
@@ -42,10 +46,22 @@ export function initInteraction(camera, controls, newtonsCradle){
                     ballIndex
                 );
 
+                // initialize drag info
+                const b = newtonsCradle.moveableDummies[ballIndex];
+                dragInfo.set(event.pointerId,{
+                    ballIndex,
+                    lastTheta: b.theta,
+                    lastPhi: b.phi,
+                    lastTime: performance.now()
+                });
+
                 controls.enabled=false;
 
                 document.body.style.cursor=
                 'grabbing';
+
+                // capture pointer for multitouch reliability
+                (event.target || window).setPointerCapture?.(event.pointerId);
             }
         }
     );
@@ -84,7 +100,7 @@ export function initInteraction(camera, controls, newtonsCradle){
                 const pivotY = newtonsCradle.frameH;
                 const pivotZ = 0; // balls are centered at z=0 in the cradle local space
 
-                // Convert pivot to world space
+                // pivot world
                 const pivotLocal = new THREE.Vector3(pivotX, pivotY, pivotZ);
                 const pivotWorld = pivotLocal.clone();
                 newtonsCradle.localToWorld(pivotWorld);
@@ -148,7 +164,7 @@ export function initInteraction(camera, controls, newtonsCradle){
 
                 // Compute angles (theta: left/right around Z, phi: front/back around X)
                 let theta = Math.atan2(dx, dy);
-                let phi = Math.atan2(dz, dy);
+                let phi = Math.asin( Math.max(-1, Math.min(1, dz / R)) ); // more stable recovery for phi
 
                 const maxAngle = Math.PI / 2.1;
 
@@ -157,11 +173,32 @@ export function initInteraction(camera, controls, newtonsCradle){
 
                 const ball = newtonsCradle.moveableDummies[ballIndex];
 
-                ball.theta = theta;
-                ball.omega = 0;
+                // compute delta time and set angular velocities based on movement
+                const info = dragInfo.get(event.pointerId);
+                const now = performance.now();
+                if(info){
+                    const dt = Math.max(1e-3, (now - info.lastTime) / 1000);
 
+                    const dTheta = (theta - info.lastTheta);
+                    const dPhi = (phi - info.lastPhi);
+
+                    // set angular velocities directly (rad/s)
+                    ball.omega = dTheta / dt;
+                    ball.omegaZ = dPhi / dt;
+
+                    // clamp using physics params
+                    const maxA = physicsParams.maxAngularSpeed;
+                    ball.omega = Math.max(-maxA, Math.min(maxA, ball.omega));
+                    ball.omegaZ = Math.max(-maxA, Math.min(maxA, ball.omegaZ));
+
+                    info.lastTheta = theta;
+                    info.lastPhi = phi;
+                    info.lastTime = now;
+                }
+
+                // set angles from drag
+                ball.theta = theta;
                 ball.phi = phi;
-                ball.omegaZ = 0;
 
             }else{
 
@@ -193,9 +230,12 @@ export function initInteraction(camera, controls, newtonsCradle){
 
     function releasePointer(event){
 
+        // on release, we already set ball.omega and ball.omegaZ during moves
         draggedBalls.delete(
             event.pointerId
         );
+
+        dragInfo.delete(event.pointerId);
 
         if(draggedBalls.size===0){
 
@@ -204,6 +244,8 @@ export function initInteraction(camera, controls, newtonsCradle){
             document.body.style.cursor=
             'default';
         }
+
+        try{ (event.target || window).releasePointerCapture?.(event.pointerId); }catch(e){}
     }
 
     window.addEventListener('pointerup', releasePointer);
