@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>كرات نيوتن - Multi Touch Physics</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+<div id="ui-container">
+
+    <h2>محاكاة كرات نيوتن المتقدمة</h2>
+
+    <div class="control-group">
+        <label>
+            <span>الجاذبية</span>
+            <span id="gVal">9.81</span>
+        </label>
+        <input type="range" id="gravity" min="1" max="25" step="0.1" value="9.81">
+    </div>
+
+    <div class="control-group">
+        <label>
+            <span>الاحتكاك</span>
+            <span id="fVal">0.05</span>
+        </label>
+        <input type="range" id="friction" min="0" max="0.5" step="0.01" value="0.05">
+    </div>
+
+    <div class="control-group">
+        <label>
+            <span>الارتداد</span>
+            <span id="rVal">0.99</span>
+        </label>
+        <input type="range" id="restitution" min="0.5" max="1" step="0.01" value="0.99">
+    </div>
+
+    <button id="resetBtn">
+        تصفير الطاقة
+    </button>
+
+    <div id="status">
+        حالة النظام: مستقر
+    </div>
+
+</div>
+
+<div id="info">
+🧲 يمكنك الآن تحريك عدة كرات بنفس الوقت
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three":"https://unpkg.com/three@0.136.0/build/three.module.js",
+        "three/addons/":"https://unpkg.com/three@0.136.0/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module" src="main.js"></script>
+
+</body>
+</html>
