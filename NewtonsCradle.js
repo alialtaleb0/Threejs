@@ -1,5 +1,5 @@
 // =============================================
-// Newton's Cradle Class
+// Newton's Cradle Class (improved collisions & frameD exposed)
 // =============================================
 
 import * as THREE from "three";
@@ -34,6 +34,7 @@ export class NewtonsCradle extends THREE.Group{
         this.frameH=14;
 
         let frameD=5;
+        this.frameD = frameD; // expose for interaction
 
         let radialSegs=16;
 
@@ -231,6 +232,9 @@ export class NewtonsCradle extends THREE.Group{
 
             ballDummy.instanceIndex=idx;
 
+            // store linear velocity of center for more accurate collisions
+            ballDummy.v = new THREE.Vector3();
+
             return ballDummy;
         });
 
@@ -250,8 +254,121 @@ export class NewtonsCradle extends THREE.Group{
                 b.phi=0;
                 b.omegaZ=0;
                 b.alphaZ=0;
+
+                b.v.set(0,0,0);
             });
         });
+    }
+
+    // Convert angular state to world-space center position
+    computeBallCenterWorld(i, outVec){
+        const b = this.moveableDummies[i];
+
+        const pivotX = (
+            -(this.ballsCount-1)*0.5 + i
+        ) * (this.ballRadius*2);
+
+        const pivotY = this.frameH;
+        const pivotZ = 0;
+
+        // pivot in local space
+        const pivotLocal = new THREE.Vector3(pivotX, pivotY, pivotZ);
+
+        // ball local pos relative to cradle: length L at angles theta (around Z) and phi (around X)
+        const L = this.stringLengthReal;
+
+        // spherical-like conversion (small-angle friendly): y axis downwards
+        const x = pivotX + Math.sin(b.theta) * Math.cos(b.phi) * L;
+        const y = pivotY - Math.cos(b.theta) * Math.cos(b.phi) * L;
+        const z = pivotZ + Math.sin(b.phi) * L;
+
+        const local = new THREE.Vector3(x, y, z);
+
+        // convert to world
+        outVec.copy(local);
+        this.localToWorld(outVec);
+
+        return outVec;
+    }
+
+    // Convert angular velocities to linear velocity of center
+    angularToLinearVelocity(i, outVec){
+        const b = this.moveableDummies[i];
+        const L = this.stringLengthReal;
+
+        // small-angle approximations: v = omega x r
+        // compute r (from pivot to center) in local coords
+        const pivotX = (
+            -(this.ballsCount-1)*0.5 + i
+        ) * (this.ballRadius*2);
+        const pivotY = this.frameH;
+        const pivotZ = 0;
+
+        const rLocal = new THREE.Vector3(
+            Math.sin(b.theta) * Math.cos(b.phi) * L,
+            -Math.cos(b.theta) * Math.cos(b.phi) * L,
+            Math.sin(b.phi) * L
+        );
+
+        // angular velocity vector in local coords: around Z is omega (pointing +y?), around X is omegaZ
+        // define ω = [omegaX, omegaY, omegaZ] -> here rotation about Z (vertical) corresponds to Vector (0,0,omegaZ?)
+        // For our parameterization: theta rotates around Z axis, phi rotates around X axis. We'll build angular velocity vector accordingly.
+        const ang = new THREE.Vector3();
+        // rotation around Z (theta) => angZ = b.omega
+        // rotation around X (phi) => angX = b.omegaZ
+        ang.set(b.omegaZ, 0, b.omega);
+
+        // linear velocity = ω cross r
+        outVec.copy(ang).cross(rLocal);
+
+        // convert to world space vector (rotation only) – assume cradle has no scale/rotation so local==world for vectors
+        return outVec;
+    }
+
+    // Apply impulse to centers along normal n (world space) at contact between i and j
+    applyImpulseBetween(i, j, n, relVelAlongNormal, e){
+        const b1 = this.moveableDummies[i];
+        const b2 = this.moveableDummies[j];
+
+        const m = 1; // assume equal mass and mass=1
+
+        // impulse scalar
+        const jsc = -(1 + e) * relVelAlongNormal / 2; // divide by 2 because equal masses
+
+        // change linear velocities
+        const imp = n.clone().multiplyScalar(jsc);
+
+        b1.v.add(imp.clone().multiplyScalar(1/m));
+        b2.v.sub(imp.clone().multiplyScalar(1/m));
+
+        // convert linear impulse back to angular velocity adjustments (approx)
+        // torque = r x J. angular delta (approx) = torque / I. approximate I = m * L^2 (point mass at distance L)
+        const L = this.stringLengthReal;
+        const r1 = new THREE.Vector3();
+        const r2 = new THREE.Vector3();
+        this.computeBallCenterWorld(i, r1); this.localToWorld(r1); // r1 is world pos of center
+        this.computeBallCenterWorld(j, r2); this.localToWorld(r2);
+
+        // vectors from pivot world to centers
+        const pivot1 = new THREE.Vector3((-(this.ballsCount-1)*0.5 + i)*(this.ballRadius*2), this.frameH, 0);
+        const pivot2 = new THREE.Vector3((-(this.ballsCount-1)*0.5 + j)*(this.ballRadius*2), this.frameH, 0);
+        this.localToWorld(pivot1); this.localToWorld(pivot2);
+
+        const r1w = new THREE.Vector3().subVectors(r1, pivot1);
+        const r2w = new THREE.Vector3().subVectors(r2, pivot2);
+
+        const torque1 = new THREE.Vector3().copy(r1w).cross(imp);
+        const torque2 = new THREE.Vector3().copy(r2w).cross(imp.clone().negate());
+
+        const I = m * L * L;
+
+        // approximate mapping torque -> (delta omega theta, delta omegaZ)
+        // we'll project torque onto axes roughly corresponding to our parameterization
+        b1.omega += torque1.z / I;
+        b1.omegaZ += torque1.x / I;
+
+        b2.omega += torque2.z / I;
+        b2.omegaZ += torque2.x / I;
     }
 
     updatePhysics(dt){
@@ -267,7 +384,7 @@ export class NewtonsCradle extends THREE.Group{
         for(let s=0;s<steps;s++){
 
             // =========================
-            // Integration
+            // Integration (angular)
             // =========================
 
             for(let i=0;i<this.ballsCount;i++){
@@ -280,6 +397,9 @@ export class NewtonsCradle extends THREE.Group{
 
                 if(isDragged){
 
+                    // keep linear velocity in sync with angles
+                    b.v.set(0,0,0);
+
                     b.omega=0;
                     b.alpha=0;
 
@@ -289,127 +409,107 @@ export class NewtonsCradle extends THREE.Group{
                     continue;
                 }
 
-                let gravityTorque=
-                -(physicsParams.gravity/L)
-                *Math.sin(b.theta);
+                // simple pendulum angular acceleration for each axis
+                let gravityTorque = -(physicsParams.gravity/L) * Math.sin(b.theta);
+                let drag = -(physicsParams.friction*b.omega) - (physicsParams.friction*0.2*b.omega*Math.abs(b.omega));
+                b.alpha = gravityTorque + drag;
+                b.omega += b.alpha*subDt;
+                b.theta += b.omega*subDt;
 
-                let drag=
-                -(physicsParams.friction*b.omega)
-                -
-                (
-                    physicsParams.friction*
-                    0.2*
-                    b.omega*
-                    Math.abs(b.omega)
-                );
+                let gravityTorqueZ = -(physicsParams.gravity/L) * Math.sin(b.phi);
+                let dragZ = -(physicsParams.friction*b.omegaZ) - (physicsParams.friction*0.2*b.omegaZ*Math.abs(b.omegaZ));
+                b.alphaZ = gravityTorqueZ + dragZ;
+                b.omegaZ += b.alphaZ*subDt;
+                b.phi += b.omegaZ*subDt;
 
-                b.alpha=gravityTorque+drag;
+                // update linear velocity from angular velocities (approx)
+                this.angularToLinearVelocity(i, b.v);
 
-                b.omega+=b.alpha*subDt;
+                // damping clamp
+                b.v.multiplyScalar(1 - physicsParams.friction*0.05);
 
-                b.theta+=b.omega*subDt;
-
-                let gravityTorqueZ=
-                -(physicsParams.gravity/L)
-                *Math.sin(b.phi);
-
-                let dragZ=
-                -(physicsParams.friction*b.omegaZ)
-                -
-                (
-                    physicsParams.friction*
-                    0.2*
-                    b.omegaZ*
-                    Math.abs(b.omegaZ)
-                );
-
-                b.alphaZ=gravityTorqueZ+dragZ;
-
-                b.omegaZ+=b.alphaZ*subDt;
-
-                b.phi+=b.omegaZ*subDt;
             }
 
             // =========================
-            // Collisions
+            // Collisions (3D sphere-sphere)
             // =========================
 
-            for(let iter=0;iter<10;iter++){
+            // compute centers
+            const centers = new Array(this.ballsCount).fill().map(()=>new THREE.Vector3());
+            for(let i=0;i<this.ballsCount;i++){
+                this.computeBallCenterWorld(i, centers[i]);
+            }
 
-                for(let i=0;i<this.ballsCount-1;i++){
+            // naive pairwise collision resolution
+            for(let i=0;i<this.ballsCount;i++){
+                for(let j=i+1;j<this.ballsCount;j++){
+                    const c1 = centers[i];
+                    const c2 = centers[j];
+                    const d = new THREE.Vector3().subVectors(c2, c1);
+                    const dist = d.length();
+                    const minDist = this.ballRadius*2;
+                    if(dist < minDist - 1e-6){
+                        const n = d.clone().normalize();
 
-                    let b1=this.moveableDummies[i];
+                        // relative velocity along normal
+                        const relV = new THREE.Vector3().subVectors(this.moveableDummies[i].v, this.moveableDummies[j].v);
+                        const relAlong = relV.dot(n);
 
-                    let b2=this.moveableDummies[i+1];
+                        if(relAlong > 0) continue; // moving apart
 
-                    let overlap=b1.theta-b2.theta;
+                        // positional correction (push apart)
+                        const correction = n.clone().multiplyScalar((minDist - dist) * 0.5 + 1e-4);
 
-                    if(overlap>0){
+                        // move centers in local space by converting correction to local and adjusting angles approx by small steps
+                        // simpler: convert correction to angular deltas (approx)
+                        // We'll apply immediate small angular displacement to avoid sinking
+                        const delta = correction.length();
 
-                        const b1Dragged=
-                        Array.from(
-                            draggedBalls.values()
-                        ).includes(i);
+                        // compute restitution
+                        const e = physicsParams.restitution;
 
-                        const b2Dragged=
-                        Array.from(
-                            draggedBalls.values()
-                        ).includes(i+1);
+                        // apply impulse
+                        this.applyImpulseBetween(i, j, n, relAlong, e);
 
-                        if(b1Dragged){
+                        // Simple position correction by nudging angles slightly along normal projection
+                        // project correction into local dx, dz for each ball
+                        const corrLocal1 = correction.clone();
+                        this.worldToLocal(corrLocal1.add(centers[i]));
+                        corrLocal1.sub(centers[i]);
 
-                            b2.theta+=overlap;
+                        // map to small angle change: dtheta ≈ dx / L, dphi ≈ dz / L
+                        const dtheta1 = corrLocal1.x / L;
+                        const dphi1 = corrLocal1.z / L;
 
-                        }else if(b2Dragged){
+                        this.moveableDummies[i].theta -= dtheta1;
+                        this.moveableDummies[i].phi -= dphi1;
 
-                            b1.theta-=overlap;
+                        const corrLocal2 = correction.clone().negate();
+                        this.worldToLocal(corrLocal2.add(centers[j]));
+                        corrLocal2.sub(centers[j]);
 
-                        }else{
+                        const dtheta2 = corrLocal2.x / L;
+                        const dphi2 = corrLocal2.z / L;
 
-                            b1.theta-=overlap*0.5;
-                            b2.theta+=overlap*0.5;
-                        }
+                        this.moveableDummies[j].theta -= dtheta2;
+                        this.moveableDummies[j].phi -= dphi2;
 
-                        let relVel=
-                        b1.omega-b2.omega;
-
-                        if(relVel>0){
-
-                            let e=
-                            physicsParams.restitution;
-
-                            let impulse=
-                            -(1+e)*relVel*0.5;
-
-                            if(!b1Dragged)
-                                b1.omega+=impulse;
-
-                            if(!b2Dragged)
-                                b2.omega-=impulse;
-                        }
                     }
                 }
             }
+
         }
 
+        // Energy computation
         this.moveableDummies.forEach((b)=>{
 
-            let ke=0.5*b.omega*b.omega + 0.5*b.omegaZ*b.omegaZ;
+            // kinetic: approximate from linear vel + angular
+            const keLinear = 0.5 * b.v.lengthSq();
+            const keAngular = 0.5*b.omega*b.omega + 0.5*b.omegaZ*b.omegaZ;
 
-            let pe=
-            physicsParams.gravity*
-            L*
-            (
-                1-Math.cos(b.theta)
-            )
-            +
-            physicsParams.gravity*
-            L*
-            (
-                1-Math.cos(b.phi)
-            );
+            let pe = physicsParams.gravity * L * (1 - Math.cos(b.theta)) + physicsParams.gravity * L * (1 - Math.cos(b.phi));
 
-            totalEnergy+=(ke+pe);
+            totalEnergy += (keLinear + keAngular + pe);
         });
 
         let statusEl=
@@ -435,6 +535,8 @@ export class NewtonsCradle extends THREE.Group{
 
                 if(Math.abs(b.phi)<0.0001)
                     b.phi=0;
+
+                b.v.multiplyScalar(0.5);
             });
 
             statusEl.innerText=
@@ -454,22 +556,18 @@ export class NewtonsCradle extends THREE.Group{
             statusEl.style.color="#2ed573";
         }
 
-        this.moveableDummies.forEach((b)=>{
+        // write back instance matrices
+        this.moveableDummies.forEach((b, i)=>{
 
+            // update rotations from angles
             b.rotation.z=b.theta;
-
             b.rotation.x=b.phi;
 
+            // update instance matrix
             b.updateMatrix();
-
-            this.ballSystem
-            .setMatrixAt(
-                b.instanceIndex,
-                b.matrix
-            );
+            this.ballSystem.setMatrixAt(b.instanceIndex, b.matrix);
         });
 
-        this.ballSystem.instanceMatrix
-        .needsUpdate=true;
+        this.ballSystem.instanceMatrix.needsUpdate=true;
     }
 }
