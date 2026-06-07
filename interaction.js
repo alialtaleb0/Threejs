@@ -8,7 +8,6 @@ export const draggedBalls = new Map();
 
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
-const dragPlane = new THREE.Plane(new THREE.Vector3(0,0,1),0);
 const intersectionPoint = new THREE.Vector3();
 
 export function initInteraction(camera, controls, newtonsCradle){
@@ -77,76 +76,92 @@ export function initInteraction(camera, controls, newtonsCradle){
                     camera
                 );
 
-                // Use a vertical plane facing the camera for free 3D drag
-                const camDir=new THREE.Vector3();
-                camera.getWorldDirection(camDir);
-                camDir.y=0;
-                camDir.normalize();
-                dragPlane.normal.copy(camDir);
-                dragPlane.constant=
-                -dragPlane.normal.dot(
-                    newtonsCradle.position
-                );
+                // Compute pivot in local coordinates (where the string is attached)
+                const pivotX = (
+                    -(newtonsCradle.ballsCount-1)*0.5 + ballIndex
+                ) * (newtonsCradle.ballRadius*2);
 
-                raycaster.ray.intersectPlane(
-                    dragPlane,
-                    intersectionPoint
-                );
+                const pivotY = newtonsCradle.frameH;
+                const pivotZ = 0; // balls are centered at z=0 in the cradle local space
 
-                let pivotX=
-                (
-                    -(newtonsCradle.ballsCount-1)
-                    *0.5
-                    +
-                    ballIndex
-                )
-                *
-                (
-                    newtonsCradle.ballRadius*2
-                );
+                // Convert pivot to world space
+                const pivotLocal = new THREE.Vector3(pivotX, pivotY, pivotZ);
+                const pivotWorld = pivotLocal.clone();
+                newtonsCradle.localToWorld(pivotWorld);
 
-                let pivotY=
-                newtonsCradle.frameH;
+                // Ray-sphere intersection: sphere centered at pivotWorld with radius = stringLengthReal
+                const ray = raycaster.ray;
+                const O = ray.origin;
+                const D = ray.direction;
+                const C = pivotWorld;
+                const R = newtonsCradle.stringLengthReal;
 
-                let dx=
-                intersectionPoint.x-pivotX;
+                const OC = new THREE.Vector3().subVectors(O, C);
+                const a = D.dot(D); // should be 1
+                const b = 2 * D.dot(OC);
+                const c = OC.dot(OC) - R*R;
+                const disc = b*b - 4*a*c;
 
-                let dy=
-                pivotY-intersectionPoint.y;
+                let worldHit = null;
 
-                let dz=
-                intersectionPoint.z;
+                if(disc >= 0){
+                    const sqrtDisc = Math.sqrt(disc);
+                    const t1 = (-b - sqrtDisc) / (2*a);
+                    const t2 = (-b + sqrtDisc) / (2*a);
 
-                let theta=
-                Math.atan2(dx,dy);
+                    // choose the closest positive t
+                    let t = Number.POSITIVE_INFINITY;
+                    if(t1 > 0 && t1 < t) t = t1;
+                    if(t2 > 0 && t2 < t) t = t2;
 
-                let phi=
-                Math.atan2(dz,dy);
+                    if(isFinite(t)){
+                        worldHit = new THREE.Vector3().copy(D).multiplyScalar(t).add(O);
+                    }
+                }
 
-                let maxAngle=
-                Math.PI/2.1;
+                // Fallback: intersect a plane that faces the camera and goes through the pivot
+                if(!worldHit){
+                    const camDir = new THREE.Vector3();
+                    camera.getWorldDirection(camDir);
 
-                theta=
-                Math.max(
-                    -maxAngle,
-                    Math.min(maxAngle,theta)
-                );
+                    const dragPlane = new THREE.Plane();
+                    dragPlane.normal.copy(camDir).normalize();
+                    dragPlane.constant = -dragPlane.normal.dot(pivotWorld);
 
-                phi=
-                Math.max(
-                    -maxAngle,
-                    Math.min(maxAngle,phi)
-                );
+                    worldHit = new THREE.Vector3();
+                    ray.intersectPlane(dragPlane, worldHit);
 
-                let ball=
-                newtonsCradle
-                .moveableDummies[ballIndex];
+                    if(!worldHit) return; // give up if no intersection
 
-                ball.theta=theta;
-                ball.omega=0;
+                    // Project the plane hit onto the sphere surface to keep string length constraint
+                    const dirFromPivot = new THREE.Vector3().subVectors(worldHit, pivotWorld).normalize();
+                    worldHit.copy(dirFromPivot.multiplyScalar(R).add(pivotWorld));
+                }
 
-                ball.phi=phi;
-                ball.omegaZ=0;
+                // Convert intersection point back to cradle local space to compute angles
+                const localHit = worldHit.clone();
+                newtonsCradle.worldToLocal(localHit);
+
+                const dx = localHit.x - pivotX;
+                const dy = pivotY - localHit.y;
+                const dz = localHit.z - pivotZ;
+
+                // Compute angles (theta: left/right around Z, phi: front/back around X)
+                let theta = Math.atan2(dx, dy);
+                let phi = Math.atan2(dz, dy);
+
+                const maxAngle = Math.PI / 2.1;
+
+                theta = Math.max(-maxAngle, Math.min(maxAngle, theta));
+                phi = Math.max(-maxAngle, Math.min(maxAngle, phi));
+
+                const ball = newtonsCradle.moveableDummies[ballIndex];
+
+                ball.theta = theta;
+                ball.omega = 0;
+
+                ball.phi = phi;
+                ball.omegaZ = 0;
 
             }else{
 
