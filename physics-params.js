@@ -5,7 +5,11 @@
 export const physicsParams = {
     gravity:9.81,
     friction:0.05,
-    restitution:0.99
+    restitution:0.99,
+    maxAngularSpeed: 50, // clamp for omega and omegaZ
+    maxLinearSpeed: 20,  // clamp for linear center velocity
+    steps: 40,           // integration steps (can be adjusted for perf)
+    releaseSmoothing: 0.15 // smoothing factor when releasing dragged balls (0..1)
 };
 
 export function initUIControls(){
